@@ -1,0 +1,136 @@
+name: Test Product CI Prod
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test-product-prod:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Product API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: product-api:ci
+
+      - name: Create Docker network
+        run: docker network create product-network
+
+      - name: Start MongoDB
+        run: |
+          docker run -d \
+            --name nammongodb \
+            --network product-network \
+            mongo:latest
+
+      - name: Wait for MongoDB
+        run: |
+          for i in {1..30}; do
+            if docker exec nammongodb mongosh --quiet --eval "db.adminCommand('ping').ok" | grep 1; then
+              echo "MongoDB is ready"
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "MongoDB failed to start"
+          docker logs nammongodb
+          exit 1
+
+      - name: Start Product API
+        run: |
+          docker run -d \
+            --name product-api-container \
+            --network product-network \
+            -p 3000:3000 \
+            -e PORT=3000 \
+            -e MONGO_URI=mongodb://nammongodb:27017/productdb \
+            product-api:ci
+
+      - name: Product API healthcheck
+        run: |
+          for i in {1..30}; do
+            if curl --fail http://localhost:3000/health; then
+              echo "Product API is healthy"
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "Product API healthcheck failed"
+          docker logs product-api-container
+          exit 1
+
+      - name: CRUD Test - Create Product
+        run: |
+          RESPONSE=$(curl --fail -s -X POST \
+            http://localhost:3000/api/products \
+            -H "Content-Type: application/json" \
+            -d '{"pid":"CI001","pname":"CI Test Product","price":100000,"quantity":10}')
+
+          echo "$RESPONSE"
+          echo "$RESPONSE" | grep '"pid":"CI001"'
+          echo "$RESPONSE" | grep '"pname":"CI Test Product"'
+
+      - name: CRUD Test - Read Product
+        run: |
+          RESPONSE=$(curl --fail -s \
+            http://localhost:3000/api/products/CI001)
+
+          echo "$RESPONSE"
+          echo "$RESPONSE" | grep '"pid":"CI001"'
+          echo "$RESPONSE" | grep '"price":100000'
+          echo "$RESPONSE" | grep '"quantity":10'
+
+      - name: CRUD Test - Update Product
+        run: |
+          RESPONSE=$(curl --fail -s -X PUT \
+            http://localhost:3000/api/products/CI001 \
+            -H "Content-Type: application/json" \
+            -d '{"pname":"CI Updated Product","price":150000,"quantity":20}')
+
+          echo "$RESPONSE"
+          echo "$RESPONSE" | grep '"pname":"CI Updated Product"'
+          echo "$RESPONSE" | grep '"price":150000'
+          echo "$RESPONSE" | grep '"quantity":20'
+
+      - name: CRUD Test - Delete Product
+        run: |
+          RESPONSE=$(curl --fail -s -X DELETE \
+            http://localhost:3000/api/products/CI001)
+
+          echo "$RESPONSE"
+          echo "$RESPONSE" | grep '"Product deleted successfully"'
+
+      - name: CRUD Test - Verify Deleted Product
+        run: |
+          HTTP_STATUS=$(curl -s \
+            -o response.txt \
+            -w "%{http_code}" \
+            http://localhost:3000/api/products/CI001)
+
+          cat response.txt
+
+          if [ "$HTTP_STATUS" != "404" ]; then
+            echo "Expected HTTP 404 but received $HTTP_STATUS"
+            exit 1
+          fi
+
+          echo "DELETE verification passed"
+
+      - name: Show containers
+        if: always()
+        run: docker ps -a
