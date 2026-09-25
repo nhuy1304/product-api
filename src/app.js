@@ -23,6 +23,14 @@ app.get("/", (req, res) => {
   });
 });
 
+// Healthcheck
+app.get("/health", (req, res) => {
+  res.status(200).json({
+    status: "healthy",
+    service: "product-api"
+  });
+});
+
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
