@@ -28,8 +28,10 @@ const productSchema = new mongoose.Schema(
     }
   },
   {
-    timestamps: true
+    timestamps: false
   }
 );
 
 module.exports = mongoose.model("Product", productSchema);
+
+
